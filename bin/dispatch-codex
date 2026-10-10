@@ -1,0 +1,54 @@
+#!/bin/sh
+# dispatch-codex [--task T] [--role R] [--name N] [--model M] [--effort E] -- codex exec ...
+# Appends worker.started / worker.completed JSONL to $MC_EVENTS (set by the mission-control mod), then runs the command.
+task=- role=worker name= model= effort=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --task|--role|--name|--model|--effort)
+      [ $# -ge 2 ] || { echo "dispatch-codex: $1 needs a value" >&2; exit 2; }
+      case "$1" in --task) task=$2 ;; --role) role=$2 ;; --name) name=$2 ;; --model) model=$2 ;; --effort) effort=$2 ;; esac
+      shift 2 ;;
+    --) shift; break ;; *) break ;;
+  esac
+done
+[ $# -eq 0 ] && { echo "usage: dispatch-codex [--task T --role R --name N --model M --effort E] -- cmd..." >&2; exit 2; }
+# model/effort fall back to codex's own flags
+prev=
+for a in "$@"; do
+  case "$prev" in -m|--model) [ -z "$model" ] && model=$a ;; esac
+  case "$a" in *model_reasoning_effort=*) [ -z "$effort" ] && { effort=${a##*=}; effort=${effort#\"}; effort=${effort%\"}; } ;; esac
+  prev=$a
+done
+id="w$$-$(date +%s)"; name=${name:-$role}
+emit() { [ -n "$MC_EVENTS" ] && mkdir -p "$(dirname "$MC_EVENTS")" && printf '%s\n' "$1" >> "$MC_EVENTS"; return 0; }
+esc() { printf '%s' "$1" | tr '\000-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+start=$(date +%s)
+emit "{\"event\":\"worker.started\",\"id\":\"$id\",\"task\":\"$(esc "$task")\",\"role\":\"$(esc "$role")\",\"name\":\"$(esc "$name")\",\"model\":\"$(esc "$model")\",\"effort\":\"$(esc "$effort")\",\"ts\":${start}000}"
+done_() { emit "{\"event\":\"worker.completed\",\"id\":\"$id\",\"exit\":$1,\"ts\":$(date +%s)000}"; }
+# killed (TaskStop, Ctrl-C, timeout): still record the end, and take the child down with us
+trap 'kill $child $finder 2>/dev/null; rm -f "$marker"; done_ 130; exit 130' INT TERM HUP
+# find this run's codex rollout (newest after start, same cwd, not claimed by another worker) and report it once
+marker=$(mktemp); cdir=$PWD; prev=
+for a in "$@"; do case "$prev" in -C|--cd) cdir=$(cd "$a" 2>/dev/null && pwd) ;; esac; prev=$a; done
+finder=
+if [ -n "$MC_EVENTS" ]; then
+  ( i=0
+    while [ $i -lt 120 ]; do
+      for f in $(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -newer "$marker" 2>/dev/null); do
+        grep -qF "$f" "$MC_EVENTS" 2>/dev/null && continue
+        head -c 4000 "$f" | grep -qF "\"cwd\":\"$cdir\"" || continue
+        emit "{\"event\":\"worker.rollout\",\"id\":\"$id\",\"path\":\"$(esc "$f")\"}"; exit 0
+      done
+      sleep 1; i=$((i+1))
+    done ) &
+  finder=$!
+fi
+# ponytail: two workers started in the same second and cwd may swap rollouts; pass --cd distinct dirs if that matters
+# explicit <&0: a backgrounded job would otherwise get /dev/null as stdin (codex exec - reads the prompt there)
+"$@" <&0 & child=$!
+wait $child; code=$?
+trap - INT TERM HUP
+[ -n "$finder" ] && { sleep 1; kill $finder 2>/dev/null; }
+rm -f "$marker"
+done_ $code
+exit $code

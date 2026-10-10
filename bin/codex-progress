@@ -1,0 +1,11 @@
+#!/bin/sh
+# codex-progress <rollout.jsonl>: 5 lines Mission Control folds into a worker's cost/progress:
+# last token_count, model + effort, command count, edit count, last agent message
+f=$1
+grep '"type":"token_count"' "$f" | tail -1 | grep . || echo
+ctx=$(grep -m1 '"type":"turn_context"' "$f")
+printf '%s %s\n' "$(printf '%s' "$ctx" | grep -o '"model":"[^"]*"' | head -1)" "$(printf '%s' "$ctx" | grep -o '"reasoning_effort":"[^"]*"' | head -1)"
+grep -c '"item":{"type":"CommandExecution"' "$f"
+grep -c '"item":{"type":"FileChange"' "$f"
+grep '"item":{"type":"AgentMessage"' "$f" | tail -1 | cut -c1-4000
+exit 0
