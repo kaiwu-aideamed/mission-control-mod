@@ -177,8 +177,12 @@ export const etaText = (est: Estimate) => `剩 ~${range(est.remainMin, n => `${M
 export const weekText = (w: Week | null, m: Mission) => {
   if (!w) return null
   const d = m.weekBase != null ? Math.round(w.pct - m.weekBase) : 0
-  return `週 ${Math.round(w.pct)}%${d >= 1 ? `（本任務 +${d}%）` : ''}`
+  const at = w.pct >= 80 && w.resetsAt ? new Date(w.resetsAt) : null
+  const reset = at && !isNaN(+at) ? ` · 週${'日一二三四五六'[at.getDay()]} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')} 重置` : ''
+  return `週 ${Math.round(w.pct)}%${d >= 1 ? `（本任務 +${d}%）` : ''}${reset}`
 }
+// yellow from 80%, red from 95%: the limit is about to stop the work
+export const weekColor = (w: Week | null) => (!w ? undefined : w.pct >= 95 ? 'red' : w.pct >= 80 ? 'yellow' : undefined)
 
 async function totalUsd($: any): Promise<number> {
   return (await read($, costUsd)) + codexUsd(await read($, progress))
@@ -436,7 +440,9 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
   }
   const gap: Seg = ['   ']
 
-  const right = [weekText(wk, m) ?? usd(cost + codexUsd(ps)), b ? `名額 ${b.left}/${b.total}` : null, est && !est.why ? etaText(est) : null]
+  const wkColor = weekColor(wk)
+  const wkText = weekText(wk, m) ?? usd(cost + codexUsd(ps))
+  const right = [wkText, b ? `名額 ${b.left}/${b.total}` : null, est && !est.why ? etaText(est) : null]
     .filter(Boolean).join('  ')
   const left = `${m.task ?? 'Mission'}  ${stage}${m.next ? `  → ${m.next}` : ''}`
   const leftRoom = Math.max(8, inner - cells(right) - 2)
@@ -475,7 +481,10 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
           <Text bold color={STAGE_COLOR[stage]}>{headParts[1]}</Text>
           <Text>{headParts[2]}</Text>
         </Box>
-        <Text dimColor>{right}</Text>
+        <Box>
+          <Text color={wkColor} dimColor={!wkColor}>{wkText}</Text>
+          <Text dimColor>{right.slice(wkText.length)}</Text>
+        </Box>
       </Box>
       {risk && row('風險', [[risk, { color: m.risk === 'BLOCKED' ? 'red' : 'yellow' }]], 'risk')}
       {route && row('派工', [
@@ -757,11 +766,13 @@ export const register: Register = on => {
       lead ? `${lead.name} ${mins(lead.startedAt, nowMs)}` : null,
       running.length + live.length > 1 ? `${running.length + live.length} workers` : null,
       ...wfRun.map(w => `${w.name} ${w.done}/${w.total}`),
-      weekText(wk, m) ?? usd(cost + codexUsd(ps)),
+      weekColor(wk) ? null : weekText(wk, m) ?? usd(cost + codexUsd(ps)),
     ].filter(Boolean).join('  ')
+    // near the weekly limit it leaves the dim tail and shows in its warning colour
+    const wkWarn = weekColor(wk) ? `  ${weekText(wk, m)}` : ''
     const nextText = m.next ? `  → ${m.next}` : ''
     const head = `${m.task ?? '—'}  `
-    const used = 2 + cells(head) + cells(stage) + (model ? cells(model) + 2 : 0) + (warn ? cells(warn) + 2 : 0)
+    const used = 2 + cells(head) + cells(stage) + (model ? cells(model) + 2 : 0) + (warn ? cells(warn) + 2 : 0) + cells(wkWarn)
     // → next outranks the dim tail: it is cut last
     const nextShown = fit(nextText, Math.max(4, e.props.bodyColumns - used))
     const room = Math.max(0, e.props.bodyColumns - used - cells(nextShown) - 2)
@@ -772,6 +783,7 @@ export const register: Register = on => {
         <Text bold color={STAGE_COLOR[stage]}>{stage}</Text>
         {model && <Text color={route?.isMismatch ? 'yellow' : undefined}>  {model}</Text>}
         {warn && <Text color="yellow">  {warn}</Text>}
+        {wkWarn && <Text color={weekColor(wk)}>{wkWarn}</Text>}
         <Text>{nextShown}</Text>
         {room > 4 && <Text dimColor>  {fit(rest, room)}</Text>}
       </Box>

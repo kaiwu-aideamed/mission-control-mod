@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { estimate, etaText, fit, modelName, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
+import { estimate, etaText, fit, modelName, weekColor, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
 
 const P = 'mission-control'
 const TOOL = 'mcp__mission-control__mission'
@@ -295,6 +295,11 @@ test('weekly limit: fill and this task\'s share; same model in two spellings is 
   expect(weekText(null, { risk: 'NORMAL' })).toBeNull()
   expect(weekText({ pct: 42.4 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 42%（本任務 +6%）')
   expect(weekText({ pct: 36.2 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 36%')
+  // reset time only once it matters; local weekday + time
+  const at = new Date(2026, 9, 15, 8, 0).toISOString()
+  expect(weekText({ pct: 97, resetsAt: at }, { risk: 'NORMAL' })).toBe('週 97% · 週四 08:00 重置')
+  expect(weekText({ pct: 50, resetsAt: at }, { risk: 'NORMAL' })).toBe('週 50%')
+  expect([weekColor({ pct: 79 }), weekColor({ pct: 80 }), weekColor({ pct: 95 })]).toEqual([undefined, 'yellow', 'red'])
   expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
   expect(modelName('gpt-6.1')).toBe('gpt-6.1')
   const r = routeOf({ risk: 'NORMAL', route: { model: 'Opus 5.5', source: '使用者指定', at: 0 } }, [], {}, { a: { model: 'claude-opus-5-5', at: 1 } })
