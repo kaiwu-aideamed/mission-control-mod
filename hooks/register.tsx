@@ -34,8 +34,8 @@ const TOOL_DESCRIPTION = `Mission Control: update the status band the person see
 Call it only at stage transitions (planning → executing → reviewing → deciding → done) or when the person must decide; never for routine progress.
 Fields: task (short id, e.g. WM-081), stage (PLANNING|EXECUTING|REVIEWING|DECIDING|WAITING_USER|DONE|FAILED), risk (NORMAL|WATCH|NEEDS_DECISION|BLOCKED), note (current biggest risk/progress, one line), next (what happens next), decision ({title, body, recommendation, estimate, options[]}) — shows buttons; the person's choice arrives as a new prompt. Pass decision: null to clear.
 expansion ({adding: ["+3 Sol executor", "+1 Astra reviewer"], purpose, estimate, options?: [{label, cap}]}) — call it BEFORE any fan-out that adds 2+ agents/workers, then end your turn. While it waits, every Agent call, Workflow call and \`codex exec\` is refused; once the person answers you get a hard budget of new agents/workers (the choice and its cap arrive as a new prompt) and calls beyond it are refused until you raise a new expansion. Each agent a Workflow starts uses one from the budget; past it, that agent's tool calls are refused.
-plan ({minutes: [lo, hi], usd: [lo, hi]}) — your estimate for the work starting now (also accepted inside expansion, starting when the person approves); the band then shows remaining time and turns WATCH if the work runs past it. route ({model, source, reason}) — set it when you assign a model to the task: model (e.g. Astra), source (who chose it, e.g. "Opus 明確指定" / "使用者指定" / "預設"), reason (one line why). The band shows it beside the model the latest codex worker or subagent actually ran, and flags a mismatch.
-progress ({done, total}) — only when you know a real count (files, parts, tests); it sharpens the remaining-time estimate.
+plan ({minutes: [lo, hi], usd: [lo, hi]}) — your estimate for the work starting now (also accepted inside expansion, starting when the person approves); the band shows the time since it started (no guessed remaining time). route ({model, source, reason}) — set it when you assign a model to the task: model (e.g. Astra), source (who chose it, e.g. "Opus 明確指定" / "使用者指定" / "預設"), reason (one line why). The band shows it beside the model the latest codex worker or subagent actually ran, and flags a mismatch.
+progress ({done, total}) — only when you know a real count (files, parts, tests); the band shows it.
 To make a Codex worker visible in the tree, run it through the wrapper: \`dispatch-codex --task WM-081 --role executor --name Sol -- codex exec ...\` (model/effort are read from codex's -m and model_reasoning_effort flags).`
 
 // Fold the wrapper's JSONL into one Worker per id; lines from other sessions never reach this file.
@@ -137,23 +137,9 @@ export function planOf(x: any): Pick<Plan, 'minutes' | 'usd'> | undefined {
   return minutes && usd ? { minutes, usd } : undefined
 }
 
-export type Estimate = { elapsedMin: number; remainMin: [number, number]; isOver: boolean; why?: string }
-
-// No fake precision: remaining time is the plan's range less elapsed, or elapsed × left/done when real progress is known.
-// Over = past the time range. Cost is not projected: the weekly limit's real reading replaces it.
-export function estimate(plan: Plan, nowMs: number, prog?: { done: number; total: number }): Estimate {
-  const elapsedMin = Math.max(0, (nowMs - plan.startedAt) / 60000)
-  let remainMin: [number, number]
-  if (prog && prog.done > 0 && prog.total >= prog.done) {
-    const r = (elapsedMin * (prog.total - prog.done)) / prog.done
-    remainMin = [r, r]
-  } else {
-    remainMin = [Math.max(0, plan.minutes[0] - elapsedMin), Math.max(0, plan.minutes[1] - elapsedMin)]
-  }
-  const isLate = elapsedMin > plan.minutes[1]
-  const why = isLate ? `已超出預估時間 ${Math.round(elapsedMin - plan.minutes[1])} 分` : undefined
-  return { elapsedMin, remainMin, isOver: isLate, why }
-}
+// Only what is measured: time since the plan started and the real done/total. A guessed remaining time misled more than it helped.
+export const elapsedText = (plan: Plan, nowMs: number, prog?: { done: number; total: number }) =>
+  `已 ${Math.max(0, Math.round((nowMs - plan.startedAt) / 60000))}m${prog ? ` · ${prog.done}/${prog.total}` : ''}`
 
 // What this task actually runs on: the latest-started of its codex workers (tagged with the task, or running)
 // and the subagents spawned since the route was set.
@@ -171,7 +157,6 @@ export function routeOf(m: Mission, ws: Worker[], ps: Record<string, Progress>, 
 }
 
 const range = (r: [number, number], f: (n: number) => string) => (f(r[0]) === f(r[1]) ? f(r[0]) : `${f(r[0])}–${f(r[1])}`)
-export const etaText = (est: Estimate) => `剩 ~${range(est.remainMin, n => `${Math.round(n)}m`)}`
 
 // the seven-day limit's fill, and how much of it this task has used; null off a subscription (the band shows $ instead)
 export const weekText = (w: Week | null, m: Mission) => {
@@ -311,7 +296,7 @@ async function choose($: any, d: Decision, i: number) {
     suffix = `（上限 ${cap} 個新 agent/worker）`
     if (cap > 0 && d.plan) {
       const plan: Plan = { ...d.plan, startedAt: await $.clock.now(), baseUsd: await totalUsd($) }
-      await update($, mission, m => ({ ...m, plan, progress: undefined, isOverWarned: false }))
+      await update($, mission, m => ({ ...m, plan, progress: undefined }))
     }
   }
   void $.prompt.submit({ text: `[Mission Control] ${d.title} → 使用者選擇：${opt}${suffix}`, asUser: true })
@@ -360,14 +345,6 @@ async function poll($: any, paths: Paths, tick: number) {
     }
     if (!same(ps, fresh)) await update($, progress, () => fresh)
   }
-  const mm = await read($, mission)
-  if (mm.plan && !mm.isOverWarned && mm.stage !== 'DONE' && mm.stage !== 'FAILED') {
-    const est = estimate(mm.plan, await $.clock.now(), mm.progress)
-    if (est.isOver) {
-      $.ui.toast(`▲ ${mm.task ?? 'Mission'}：${est.why}`)
-      await update($, mission, m => ({ ...m, isOverWarned: true, risk: m.risk === 'NORMAL' ? 'WATCH' : m.risk, note: m.note ?? est.why }))
-    }
-  }
   const wfBefore = await read($, workflows)
   const wf = await readWorkflows($, paths.sessionDir, wfBefore)
   if (!same(wfBefore, wf)) await update($, workflows, () => wf)
@@ -412,7 +389,7 @@ type Seg = [text: string, style?: Record<string, unknown>]
 export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, now, b, wfs, f, ps, cols, sp }: FlowData) {
   const nowMs = now * 60000
   const isOver = m.stage === 'DONE' || m.stage === 'FAILED'
-  const est = m.plan && !isOver ? estimate(m.plan, nowMs, m.progress) : null
+  const est = m.plan && !isOver ? elapsedText(m.plan, nowMs, m.progress) : null
   const mine = ws.filter(w => w.status === 'running' || (m.task && w.task === m.task)).slice(-3)
   const liveAgents = as.filter(a => a.status === 'running')
   const wf = wfs.find(w => w.status === 'running') ?? wfs.at(-1)
@@ -442,7 +419,7 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
 
   const wkColor = weekColor(wk)
   const wkText = weekText(wk, m) ?? usd(cost + codexUsd(ps))
-  const right = [wkText, b ? `名額 ${b.left}/${b.total}` : null, est && !est.why ? etaText(est) : null]
+  const right = [wkText, b ? `名額 ${b.left}/${b.total}` : null, est]
     .filter(Boolean).join('  ')
   const left = `${m.task ?? 'Mission'}  ${stage}${m.next ? `  → ${m.next}` : ''}`
   const leftRoom = Math.max(8, inner - cells(right) - 2)
@@ -457,7 +434,10 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
   })
 
   const work: Seg[] = [
-    ...liveAgents.map(a => [`● ${a.type}`] as Seg),
+    ...Object.entries(liveAgents.reduce<Record<string, number>>((n, a) => {
+      const k = a.description || a.type || 'agent'
+      return { ...n, [k]: (n[k] ?? 0) + 1 }
+    }, {})).map(([k, n]) => [`● ${k}${n > 1 ? ` ×${n}` : ''}`] as Seg),
     ...mine.map(w => {
       const p = ps[w.id]
       const t = w.status === 'running' ? mins(w.startedAt, nowMs) : mins(w.startedAt, w.endedAt ?? w.startedAt)
@@ -470,9 +450,9 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
     ...(wf && isFwBehind ? [gap] : []),
     ...(isFwBehind ? [[`flightwake 落後 ${f!.behind} commits`, { color: 'yellow' }] as Seg] : []),
   ]
-  const risk = [m.risk !== 'NORMAL' ? `${RISK_MARK[m.risk]} ${m.note ?? m.risk}` : null, est?.why ? `▲ ${est.why}` : null].filter(Boolean).join('   ')
+  const risk = m.risk !== 'NORMAL' ? `${RISK_MARK[m.risk]} ${m.note ?? m.risk}` : null
 
-  const isWarn = Boolean(est?.isOver) || m.risk !== 'NORMAL' || Boolean(route?.isMismatch)
+  const isWarn = m.risk !== 'NORMAL' || Boolean(route?.isMismatch)
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={m.risk === 'BLOCKED' ? 'red' : isWarn ? 'yellow' : 'gray'} paddingX={1}>
       <Box justifyContent="space-between">
@@ -679,7 +659,7 @@ export const register: Register = on => {
       if (fields.task !== undefined && (fields.task !== m.task || m.stage === 'DONE' || m.stage === 'FAILED')) merged.weekBase = wk?.pct
       for (const k of ['task', 'stage', 'risk', 'note', 'next'] as const) if (fields[k] !== undefined) (merged as any)[k] = fields[k]
       if (fields.route) merged.route = { ...fields.route, at: now }
-      if (plan && base) Object.assign(merged, { plan: { ...plan, ...base }, progress: undefined, isOverWarned: false })
+      if (plan && base) Object.assign(merged, { plan: { ...plan, ...base }, progress: undefined })
       const pr = fields.progress
       if (pr && typeof pr.done === 'number' && typeof pr.total === 'number' && pr.total > 0) merged.progress = { done: pr.done, total: pr.total }
       return merged
@@ -754,18 +734,16 @@ export const register: Register = on => {
     // folded: one line — task, stage, then the rest dim, warnings in yellow
     const nowMs = now * 60000
     const lead = running[running.length - 1]
-    const est = m.plan && !isOver ? estimate(m.plan, nowMs, m.progress) : null
+    const est = m.plan && !isOver ? elapsedText(m.plan, nowMs, m.progress) : null
     const route = routeOf(m, ws, ps, sp)
     const stage = stageOf(m, ws, d) || (e.props.isWorking || live.length ? 'WORKING' : 'IDLE')
-    const warn = [
-      m.risk !== 'NORMAL' ? `${RISK_MARK[m.risk]} ${m.note ?? m.risk}` : null,
-      est?.why ? `▲ ${est.why}` : null,
-    ].filter(Boolean).join('  ')
+    const warn = m.risk !== 'NORMAL' ? `${RISK_MARK[m.risk]} ${m.note ?? m.risk}` : ''
     const model = route ? (route.isMismatch ? `${route.model} ▲ 實際 ${route.actual}` : `${route.model}${route.actual ? ' ✓' : ''}`) : ''
     const rest = [
       lead ? `${lead.name} ${mins(lead.startedAt, nowMs)}` : null,
       running.length + live.length > 1 ? `${running.length + live.length} workers` : null,
       ...wfRun.map(w => `${w.name} ${w.done}/${w.total}`),
+      est,
       weekColor(wk) ? null : weekText(wk, m) ?? usd(cost + codexUsd(ps)),
     ].filter(Boolean).join('  ')
     // near the weekly limit it leaves the dim tail and shows in its warning colour

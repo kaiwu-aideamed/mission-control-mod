@@ -37,7 +37,6 @@ export type Mission = {
   next?: string
   plan?: Plan
   progress?: { done: number; total: number }
-  isOverWarned?: boolean
   // who picks the model for this task and why; the actual model is read from the worker, never from here
   route?: Route
   // the weekly limit's percentUsed when this task started

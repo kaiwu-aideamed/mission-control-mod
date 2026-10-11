@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { estimate, etaText, fit, modelName, weekColor, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
+import { elapsedText, fit, modelName, weekColor, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
 
 const P = 'mission-control'
 const TOOL = 'mcp__mission-control__mission'
@@ -191,19 +191,10 @@ test('parseProgress reads tokens, model, counts and prices it', async () => {
   expect(tokens(1234567)).toBe('1.2M')
 })
 
-test('estimate: plan range, real progress, and over-estimate', async () => {
+test('elapsed time and real progress, never a guessed remainder', async () => {
   const plan = { startedAt: 0, baseUsd: 1, minutes: [20, 40] as [number, number], usd: [1, 2] as [number, number] }
-  const min = 60000
-  const a = estimate(plan, 10 * min)
-  expect(a.remainMin).toEqual([10, 30])
-  expect(a.isOver).toBe(false)
-  expect(etaText(a)).toBe('剩 ~10m–30m')
-  // real progress 1/4 after 10 min → 30 min left
-  expect(estimate(plan, 10 * min, { done: 1, total: 4 }).remainMin).toEqual([30, 30])
-  // past the time range
-  const late = estimate(plan, 45 * min)
-  expect(late.isOver).toBe(true)
-  expect(late.why).toContain('超出預估時間 5 分')
+  expect(elapsedText(plan, 10 * 60000)).toBe('已 10m')
+  expect(elapsedText(plan, 45 * 60000, { done: 1, total: 4 })).toBe('已 45m · 1/4')
   expect(planOf({ minutes: [40, 20], usd: [1, 2] })).toEqual({ minutes: [20, 40], usd: [1, 2] })
   expect(planOf({ minutes: [1], usd: [1, 2] })).toBeUndefined()
 })
@@ -213,7 +204,7 @@ test('plan on the mission tool shows remaining time in the band', async ($, on) 
   await $.tool.call({ tool: TOOL, task: 'WEB-1', stage: 'EXECUTING', plan: { minutes: [20, 40], usd: [1, 2] } } as any)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: P, surface, ...BAND })
-    expect(await shown(ui)).toMatch(/剩 ~20m–40m/)
+    expect(await shown(ui)).toMatch(/已 0m/)
     await ui.unmount()
   }
 })
