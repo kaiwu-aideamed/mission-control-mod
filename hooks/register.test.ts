@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { estimate, etaText, fit, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
+import { estimate, etaText, fit, modelName, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
 
 const P = 'mission-control'
 const TOOL = 'mcp__mission-control__mission'
@@ -194,20 +194,16 @@ test('parseProgress reads tokens, model, counts and prices it', async () => {
 test('estimate: plan range, real progress, and over-estimate', async () => {
   const plan = { startedAt: 0, baseUsd: 1, minutes: [20, 40] as [number, number], usd: [1, 2] as [number, number] }
   const min = 60000
-  // 10 min in, spent $0.50 → $0.05/min; 10–30 min left → projected $1.00–$2.00
-  const a = estimate(plan, 10 * min, 1.5)
+  const a = estimate(plan, 10 * min)
   expect(a.remainMin).toEqual([10, 30])
-  expect(a.projUsd.map(n => +n.toFixed(2))).toEqual([1, 2])
   expect(a.isOver).toBe(false)
-  expect(etaText(a)).toBe('剩 ~10m–30m · 預測 $1.00–$2.00')
+  expect(etaText(a)).toBe('剩 ~10m–30m')
   // real progress 1/4 after 10 min → 30 min left
-  expect(estimate(plan, 10 * min, 1.5, { done: 1, total: 4 }).remainMin).toEqual([30, 30])
+  expect(estimate(plan, 10 * min, { done: 1, total: 4 }).remainMin).toEqual([30, 30])
   // past the time range
-  const late = estimate(plan, 45 * min, 2)
+  const late = estimate(plan, 45 * min)
   expect(late.isOver).toBe(true)
   expect(late.why).toContain('超出預估時間 5 分')
-  // burning fast: $3 in 10 min → projected way over 1.4 × $2
-  expect(estimate(plan, 10 * min, 4).why).toContain('超過預估上限')
   expect(planOf({ minutes: [40, 20], usd: [1, 2] })).toEqual({ minutes: [20, 40], usd: [1, 2] })
   expect(planOf({ minutes: [1], usd: [1, 2] })).toBeUndefined()
 })
@@ -217,7 +213,7 @@ test('plan on the mission tool shows remaining time in the band', async ($, on) 
   await $.tool.call({ tool: TOOL, task: 'WEB-1', stage: 'EXECUTING', plan: { minutes: [20, 40], usd: [1, 2] } } as any)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: P, surface, ...BAND })
-    expect(await shown(ui)).toMatch(/剩 ~20m–40m(?! · 預測)/)
+    expect(await shown(ui)).toMatch(/剩 ~20m–40m/)
     await ui.unmount()
   }
 })
@@ -264,9 +260,9 @@ test('route: a subagent spawned after the route is what actually ran', async ($,
   expect(await band()).toMatch(/尚未派工/)
   await $.agent.spawn({ prompt: 'p', model: 'claude-haiku-5-5' } as any)
   await clock.advance(1000)
-  expect(await band()).toMatch(/haiku ← Opus 明確指定\s+✓ claude-haiku-5-5/)
+  expect(await band()).toMatch(/haiku ← Opus 明確指定\s+✓ Haiku 5.5/)
   await $.agent.spawn({ prompt: 'p', model: 'claude-sonnet-5-5' } as any)
-  expect(await band()).toMatch(/▲ 實際 claude-sonnet-5-5/)
+  expect(await band()).toMatch(/▲ 實際 Sonnet 5.5/)
 })
 
 test('every dispatch fills the band: a subagent sets task and route; a mission-tool route stays', async ($, on) => {
@@ -280,17 +276,27 @@ test('every dispatch fills the band: a subagent sets task and route; a mission-t
   }
   await $.agent.spawn({ prompt: 'p', description: '查進箱路徑', subagentType: 'Explore', parentModel: 'claude-opus-5-5', model: 'claude-haiku-5-5' } as any)
   expect(await band()).toMatch(/查進箱路徑  EXECUTING/)
-  expect(await band()).toMatch(/Haiku ← Opus 明確指定\s+✓ claude-haiku-5-5/)
+  expect(await band()).toMatch(/Haiku 5.5 ← Opus 5.5 明確指定\s+✓ Haiku 5.5/)
   await clock.advance(1000)
   await $.agent.spawn({ prompt: 'p', description: '整理', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' } as any)
-  expect(await band()).toMatch(/Opus ← 預設（general-purpose）/)
+  expect(await band()).toMatch(/Opus 5.5 ← 預設（general-purpose）/)
   // the mission tool's route holds while its task is open
   await $.tool.call({ tool: TOOL, task: 'WM-1', route: { model: 'Astra', source: '使用者指定' } } as any)
   await clock.advance(1000)
   await $.agent.spawn({ prompt: 'p', description: 'x', subagentType: 'Explore', parentModel: 'claude-opus-5-5', model: 'claude-haiku-5-5' } as any)
-  expect(await band()).toMatch(/WM-1[\s\S]*Astra ← 使用者指定\s+▲ 實際 claude-haiku-5-5/)
+  expect(await band()).toMatch(/WM-1[\s\S]*Astra ← 使用者指定\s+▲ 實際 Haiku 5.5/)
   // once done, the next spawn starts a new task on the band
   await $.tool.call({ tool: TOOL, stage: 'DONE' } as any)
   await $.agent.spawn({ prompt: 'p', description: '下一件事', subagentType: 'Explore', parentModel: 'claude-opus-5-5' } as any)
   expect(await band()).toMatch(/下一件事  EXECUTING/)
+})
+
+test('weekly limit: fill and this task\'s share; same model in two spellings is not a mismatch', async () => {
+  expect(weekText(null, { risk: 'NORMAL' })).toBeNull()
+  expect(weekText({ pct: 42.4 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 42%（本任務 +6%）')
+  expect(weekText({ pct: 36.2 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 36%')
+  expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
+  expect(modelName('gpt-6.1')).toBe('gpt-6.1')
+  const r = routeOf({ risk: 'NORMAL', route: { model: 'Opus 5.5', source: '使用者指定', at: 0 } }, [], {}, { a: { model: 'claude-opus-5-5', at: 1 } })
+  expect(r).toMatchObject({ actual: 'Opus 5.5', isMismatch: false })
 })

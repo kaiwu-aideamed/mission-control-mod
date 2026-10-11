@@ -40,6 +40,8 @@ export type Mission = {
   isOverWarned?: boolean
   // who picks the model for this task and why; the actual model is read from the worker, never from here
   route?: Route
+  // the weekly limit's percentUsed when this task started
+  weekBase?: number
 }
 // at: when the mission tool set it; spawns before it are not this route's
 // auto: filled in from a spawn, not by the mission tool; the next spawn may replace it
@@ -58,6 +60,8 @@ export type Decision = {
   caps?: number[]
   plan?: Pick<Plan, 'minutes' | 'usd'>
 }
+// the seven-day rate-limit window, from session.measure; null off a subscription
+export type Week = { pct: number; resetsAt?: string }
 // null = no cap; set once an expansion is answered
 export type Budget = { left: number; total: number } | null
 
@@ -79,6 +83,7 @@ declare module 'claude-code' {
       fw: Flightwake | null
       progress: Record<string, Progress>
       spawned: Spawned
+      week: Week | null
     }
   }
 }
