@@ -1,7 +1,7 @@
 import type { RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { elapsedText, fit, modelName, weekColor, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
+import { agentSegs, elapsedText, fit, modelName, weekColor, weekText, renderFlow, routeOf, parseProgress, planOf, reduceEvents, reduceJournal, tokens, totalOf } from './register.tsx'
 
 const P = 'mission-control'
 const TOOL = 'mcp__mission-control__mission'
@@ -193,8 +193,8 @@ test('parseProgress reads tokens, model, counts and prices it', async () => {
 
 test('elapsed time and real progress, never a guessed remainder', async () => {
   const plan = { startedAt: 0, baseUsd: 1, minutes: [20, 40] as [number, number], usd: [1, 2] as [number, number] }
-  expect(elapsedText(plan, 10 * 60000)).toBe('已 10m')
-  expect(elapsedText(plan, 45 * 60000, { done: 1, total: 4 })).toBe('已 45m · 1/4')
+  expect(elapsedText(plan, 10 * 60000)).toBe('10m')
+  expect(elapsedText(plan, 45 * 60000, { done: 1, total: 4 })).toBe('45m 進度1/4')
   expect(planOf({ minutes: [40, 20], usd: [1, 2] })).toEqual({ minutes: [20, 40], usd: [1, 2] })
   expect(planOf({ minutes: [1], usd: [1, 2] })).toBeUndefined()
 })
@@ -204,7 +204,7 @@ test('plan on the mission tool shows remaining time in the band', async ($, on) 
   await $.tool.call({ tool: TOOL, task: 'WEB-1', stage: 'EXECUTING', plan: { minutes: [20, 40], usd: [1, 2] } } as any)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: P, surface, ...BAND })
-    expect(await shown(ui)).toMatch(/已 0m/)
+    expect(await shown(ui)).toMatch(/0m/)
     await ui.unmount()
   }
 })
@@ -284,15 +284,23 @@ test('every dispatch fills the band: a subagent sets task and route; a mission-t
 
 test('weekly limit: fill and this task\'s share; same model in two spellings is not a mismatch', async () => {
   expect(weekText(null, { risk: 'NORMAL' })).toBeNull()
-  expect(weekText({ pct: 42.4 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 42%（本任務 +6%）')
-  expect(weekText({ pct: 36.2 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週 36%')
+  expect(weekText({ pct: 42.4 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週42% +6%')
+  expect(weekText({ pct: 36.2 }, { risk: 'NORMAL', weekBase: 36 })).toBe('週36%')
   // reset time only once it matters; local weekday + time
   const at = new Date(2026, 9, 15, 8, 0).toISOString()
-  expect(weekText({ pct: 97, resetsAt: at }, { risk: 'NORMAL' })).toBe('週 97% · 週四 08:00 重置')
-  expect(weekText({ pct: 50, resetsAt: at }, { risk: 'NORMAL' })).toBe('週 50%')
+  expect(weekText({ pct: 97, resetsAt: at }, { risk: 'NORMAL' })).toBe('週97% ↻四08:00')
+  expect(weekText({ pct: 50, resetsAt: at }, { risk: 'NORMAL' })).toBe('週50%')
   expect([weekColor({ pct: 79 }), weekColor({ pct: 80 }), weekColor({ pct: 95 })]).toEqual([undefined, 'yellow', 'red'])
   expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
   expect(modelName('gpt-6.1')).toBe('gpt-6.1')
   const r = routeOf({ risk: 'NORMAL', route: { model: 'Opus 5.5', source: '使用者指定', at: 0 } }, [], {}, { a: { model: 'claude-opus-5-5', at: 1 } })
   expect(r).toMatchObject({ actual: 'Opus 5.5', isMismatch: false })
+})
+
+test('agents: count first, shared leading words dropped, same ones folded', () => {
+  const a = (d: string) => ({ id: d, description: d, type: 'general-purpose', status: 'running' })
+  const t = (segs: any[]) => segs.map(x => x[0]).join('')
+  expect(t(agentSegs([a('R3 scan ads data'), a('R3 scan ads app'), a('R3 scan n8n')]))).toBe('● 3 ads data  ·  ads app  ·  n8n')
+  expect(t(agentSegs([a('審查'), a('審查')]))).toBe('● 2 審查 ×2')
+  expect(t(agentSegs([a('R3 scan ads data')]))).toBe('● R3 scan ads data')
 })

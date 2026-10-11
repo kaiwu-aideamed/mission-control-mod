@@ -139,7 +139,7 @@ export function planOf(x: any): Pick<Plan, 'minutes' | 'usd'> | undefined {
 
 // Only what is measured: time since the plan started and the real done/total. A guessed remaining time misled more than it helped.
 export const elapsedText = (plan: Plan, nowMs: number, prog?: { done: number; total: number }) =>
-  `已 ${Math.max(0, Math.round((nowMs - plan.startedAt) / 60000))}m${prog ? ` · ${prog.done}/${prog.total}` : ''}`
+  `${Math.max(0, Math.round((nowMs - plan.startedAt) / 60000))}m${prog ? ` 進度${prog.done}/${prog.total}` : ''}`
 
 // What this task actually runs on: the latest-started of its codex workers (tagged with the task, or running)
 // and the subagents spawned since the route was set.
@@ -163,8 +163,8 @@ export const weekText = (w: Week | null, m: Mission) => {
   if (!w) return null
   const d = m.weekBase != null ? Math.round(w.pct - m.weekBase) : 0
   const at = w.pct >= 80 && w.resetsAt ? new Date(w.resetsAt) : null
-  const reset = at && !isNaN(+at) ? ` · 週${'日一二三四五六'[at.getDay()]} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')} 重置` : ''
-  return `週 ${Math.round(w.pct)}%${d >= 1 ? `（本任務 +${d}%）` : ''}${reset}`
+  const reset = at && !isNaN(+at) ? ` ↻${'日一二三四五六'[at.getDay()]}${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''
+  return `週${Math.round(w.pct)}%${d >= 1 ? ` +${d}%` : ''}${reset}`
 }
 // yellow from 80%, red from 95%: the limit is about to stop the work
 export const weekColor = (w: Week | null) => (!w ? undefined : w.pct >= 95 ? 'red' : w.pct >= 80 ? 'yellow' : undefined)
@@ -386,6 +386,16 @@ type FlowData = {
   wfs: Workflow[]; f: Flightwake | null; ps: Record<string, Progress>; cols: number; sp?: Spawned
 }
 type Seg = [text: string, style?: Record<string, unknown>]
+// running agents by what they do: a count first when there are several, the words they all start with dropped, same ones as ×n
+export function agentSegs(as: Agent[]): Seg[] {
+  const n: Record<string, number> = {}
+  for (const a of as) { const k = a.description || a.type || 'agent'; n[k] = (n[k] ?? 0) + 1 }
+  const keys = Object.keys(n)
+  let pre = keys.length > 1 ? keys.reduce((p, k) => { while (!k.startsWith(p)) p = p.slice(0, -1); return p }) : ''
+  pre = pre.slice(0, pre.lastIndexOf(' ') + 1)
+  const items = keys.map(k => [`${k.slice(pre.length)}${n[k]! > 1 ? ` ×${n[k]}` : ''}`] as Seg)
+  return as.length > 1 ? [[`● ${as.length} `, { bold: true }], ...items.flatMap((x, i) => (i ? [['  ·  ', { dimColor: true }] as Seg, x] : [x]))] : items.map(([t]) => [`● ${t}`] as Seg)
+}
 export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, now, b, wfs, f, ps, cols, sp }: FlowData) {
   const nowMs = now * 60000
   const isOver = m.stage === 'DONE' || m.stage === 'FAILED'
@@ -419,7 +429,7 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
 
   const wkColor = weekColor(wk)
   const wkText = weekText(wk, m) ?? usd(cost + codexUsd(ps))
-  const right = [wkText, b ? `名額 ${b.left}/${b.total}` : null, est]
+  const right = [wkText, b ? `名額${b.left}/${b.total}` : null, est]
     .filter(Boolean).join('  ')
   const left = `${m.task ?? 'Mission'}  ${stage}${m.next ? `  → ${m.next}` : ''}`
   const leftRoom = Math.max(8, inner - cells(right) - 2)
@@ -433,17 +443,13 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
     return part
   })
 
-  const work: Seg[] = [
-    ...Object.entries(liveAgents.reduce<Record<string, number>>((n, a) => {
-      const k = a.description || a.type || 'agent'
-      return { ...n, [k]: (n[k] ?? 0) + 1 }
-    }, {})).map(([k, n]) => [`● ${k}${n > 1 ? ` ×${n}` : ''}`] as Seg),
-    ...mine.map(w => {
+  const workerSegs: Seg[] = mine.map(w => {
       const p = ps[w.id]
       const t = w.status === 'running' ? mins(w.startedAt, nowMs) : mins(w.startedAt, w.endedAt ?? w.startedAt)
       return [`${mark(w.status)} ${w.name} ${t}${p?.usd != null ? ` ≈${usd(p.usd)}` : ''}${p ? ` ${p.commands}指令` : ''}`, { color: MARK_COLOR[w.status] }] as Seg
-    }),
-  ].flatMap((x, i) => (i ? [gap, x] : [x]))
+    }).flatMap((x, i) => (i ? [gap, x] : [x]))
+  const agentRow = agentSegs(liveAgents)
+  const work: Seg[] = [...agentRow, ...(agentRow.length && workerSegs.length ? [gap] : []), ...workerSegs]
   const isFwBehind = Boolean(f?.behind && f.behind >= 3)
   const flow: Seg[] = [
     ...(wf ? [[`${mark(wf.status)} ${wf.name} ${wf.done}/${wf.total}${wf.phase ? ` ${wf.phase}` : ''}`, { color: MARK_COLOR[wf.status] }] as Seg] : []),
