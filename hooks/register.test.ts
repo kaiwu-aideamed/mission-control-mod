@@ -194,8 +194,7 @@ test('parseProgress reads tokens, model, counts and prices it', async () => {
 test('elapsed time and real progress, never a guessed remainder', async () => {
   const plan = { startedAt: 0, baseUsd: 1, minutes: [20, 40] as [number, number], usd: [1, 2] as [number, number] }
   expect(elapsedText(plan, 10 * 60000)).toBe('10m')
-  expect(elapsedText(plan, 45 * 60000, { done: 1, total: 4 })).toBe('45m 進度1/4')
-  expect(planOf({ minutes: [40, 20], usd: [1, 2] })).toEqual({ minutes: [20, 40], usd: [1, 2] })
+    expect(planOf({ minutes: [40, 20], usd: [1, 2] })).toEqual({ minutes: [20, 40], usd: [1, 2] })
   expect(planOf({ minutes: [1], usd: [1, 2] })).toBeUndefined()
 })
 

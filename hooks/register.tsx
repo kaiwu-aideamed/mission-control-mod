@@ -35,7 +35,6 @@ Call it only at stage transitions (planning → executing → reviewing → deci
 Fields: task (short id, e.g. WM-081), stage (PLANNING|EXECUTING|REVIEWING|DECIDING|WAITING_USER|DONE|FAILED), risk (NORMAL|WATCH|NEEDS_DECISION|BLOCKED), note (current biggest risk/progress, one line), next (what happens next), decision ({title, body, recommendation, estimate, options[]}) — shows buttons; the person's choice arrives as a new prompt. Pass decision: null to clear.
 expansion ({adding: ["+3 Sol executor", "+1 Astra reviewer"], purpose, estimate, options?: [{label, cap}]}) — call it BEFORE any fan-out that adds 2+ agents/workers, then end your turn. While it waits, every Agent call, Workflow call and \`codex exec\` is refused; once the person answers you get a hard budget of new agents/workers (the choice and its cap arrive as a new prompt) and calls beyond it are refused until you raise a new expansion. Each agent a Workflow starts uses one from the budget; past it, that agent's tool calls are refused.
 plan ({minutes: [lo, hi], usd: [lo, hi]}) — your estimate for the work starting now (also accepted inside expansion, starting when the person approves); the band shows the time since it started (no guessed remaining time). route ({model, source, reason}) — set it when you assign a model to the task: model (e.g. Astra), source (who chose it, e.g. "Opus 明確指定" / "使用者指定" / "預設"), reason (one line why). The band shows it beside the model the latest codex worker or subagent actually ran, and flags a mismatch.
-progress ({done, total}) — only when you know a real count (files, parts, tests); the band shows it.
 To make a Codex worker visible in the tree, run it through the wrapper: \`dispatch-codex --task WM-081 --role executor --name Sol -- codex exec ...\` (model/effort are read from codex's -m and model_reasoning_effort flags).`
 
 // Fold the wrapper's JSONL into one Worker per id; lines from other sessions never reach this file.
@@ -138,8 +137,7 @@ export function planOf(x: any): Pick<Plan, 'minutes' | 'usd'> | undefined {
 }
 
 // Only what is measured: time since the plan started and the real done/total. A guessed remaining time misled more than it helped.
-export const elapsedText = (plan: Plan, nowMs: number, prog?: { done: number; total: number }) =>
-  `${Math.max(0, Math.round((nowMs - plan.startedAt) / 60000))}m${prog ? ` 進度${prog.done}/${prog.total}` : ''}`
+export const elapsedText = (plan: Plan, nowMs: number) => `${Math.max(0, Math.round((nowMs - plan.startedAt) / 60000))}m`
 
 // What this task actually runs on: the latest-started of its codex workers (tagged with the task, or running)
 // and the subagents spawned since the route was set.
@@ -269,7 +267,7 @@ async function autoRoute($: any, route: Omit<Route, 'at' | 'auto'>, task: string
     const fresh = !isOpen || !m.task
     return {
       ...m,
-      ...(fresh ? { task, stage: 'EXECUTING', next: undefined, plan: undefined, progress: undefined, risk: 'NORMAL' as Risk, note: undefined, weekBase: wk?.pct } : {}),
+      ...(fresh ? { task, stage: 'EXECUTING', next: undefined, plan: undefined, risk: 'NORMAL' as Risk, note: undefined, weekBase: wk?.pct } : {}),
       route: { ...route, at, auto: true },
     }
   })
@@ -296,7 +294,7 @@ async function choose($: any, d: Decision, i: number) {
     suffix = `（上限 ${cap} 個新 agent/worker）`
     if (cap > 0 && d.plan) {
       const plan: Plan = { ...d.plan, startedAt: await $.clock.now(), baseUsd: await totalUsd($) }
-      await update($, mission, m => ({ ...m, plan, progress: undefined }))
+      await update($, mission, m => ({ ...m, plan }))
     }
   }
   void $.prompt.submit({ text: `[Mission Control] ${d.title} → 使用者選擇：${opt}${suffix}`, asUser: true })
@@ -396,10 +394,10 @@ export function agentSegs(as: Agent[]): Seg[] {
   const items = keys.map(k => [`${k.slice(pre.length)}${n[k]! > 1 ? ` ×${n[k]}` : ''}`] as Seg)
   return as.length > 1 ? [[`● ${as.length} `, { bold: true }], ...items.flatMap((x, i) => (i ? [['  ·  ', { dimColor: true }] as Seg, x] : [x]))] : items.map(([t]) => [`● ${t}`] as Seg)
 }
-export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, now, b, wfs, f, ps, cols, sp }: FlowData) {
+export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, now, wfs, f, ps, cols, sp }: FlowData) {
   const nowMs = now * 60000
   const isOver = m.stage === 'DONE' || m.stage === 'FAILED'
-  const est = m.plan && !isOver ? elapsedText(m.plan, nowMs, m.progress) : null
+  const est = m.plan && !isOver ? elapsedText(m.plan, nowMs) : null
   const mine = ws.filter(w => w.status === 'running' || (m.task && w.task === m.task)).slice(-3)
   const liveAgents = as.filter(a => a.status === 'running')
   const wf = wfs.find(w => w.status === 'running') ?? wfs.at(-1)
@@ -429,7 +427,7 @@ export function renderFlow({ Box, Text }: any, { wk = null, m, ws, as, cost, d, 
 
   const wkColor = weekColor(wk)
   const wkText = weekText(wk, m) ?? usd(cost + codexUsd(ps))
-  const right = [wkText, b ? `名額${b.left}/${b.total}` : null, est]
+  const right = [wkText, est]
     .filter(Boolean).join('  ')
   const left = `${m.task ?? 'Mission'}  ${stage}${m.next ? `  → ${m.next}` : ''}`
   const leftRoom = Math.max(8, inner - cells(right) - 2)
@@ -517,11 +515,6 @@ export const register: Register = on => {
             required: ['model', 'source'],
           },
           plan: PLAN_SCHEMA,
-          progress: {
-            type: 'object',
-            properties: { done: { type: 'integer', minimum: 0 }, total: { type: 'integer', minimum: 1 } },
-            required: ['done', 'total'],
-          },
           expansion: {
             type: ['object', 'null'],
             properties: {
@@ -665,9 +658,7 @@ export const register: Register = on => {
       if (fields.task !== undefined && (fields.task !== m.task || m.stage === 'DONE' || m.stage === 'FAILED')) merged.weekBase = wk?.pct
       for (const k of ['task', 'stage', 'risk', 'note', 'next'] as const) if (fields[k] !== undefined) (merged as any)[k] = fields[k]
       if (fields.route) merged.route = { ...fields.route, at: now }
-      if (plan && base) Object.assign(merged, { plan: { ...plan, ...base }, progress: undefined })
-      const pr = fields.progress
-      if (pr && typeof pr.done === 'number' && typeof pr.total === 'number' && pr.total > 0) merged.progress = { done: pr.done, total: pr.total }
+      if (plan && base) merged.plan = { ...plan, ...base }
       return merged
     })
     if (d !== undefined) {
@@ -740,7 +731,7 @@ export const register: Register = on => {
     // folded: one line — task, stage, then the rest dim, warnings in yellow
     const nowMs = now * 60000
     const lead = running[running.length - 1]
-    const est = m.plan && !isOver ? elapsedText(m.plan, nowMs, m.progress) : null
+    const est = m.plan && !isOver ? elapsedText(m.plan, nowMs) : null
     const route = routeOf(m, ws, ps, sp)
     const stage = stageOf(m, ws, d) || (e.props.isWorking || live.length ? 'WORKING' : 'IDLE')
     const warn = m.risk !== 'NORMAL' ? `${RISK_MARK[m.risk]} ${m.note ?? m.risk}` : ''
